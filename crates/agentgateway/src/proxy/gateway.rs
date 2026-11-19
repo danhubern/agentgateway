@@ -1794,6 +1794,7 @@ pub fn auto_server(c: Option<&frontend::HTTP>) -> auto::Builder<::hyper_util::rt
 	let mut b = auto::Builder::new(::hyper_util::rt::TokioExecutor::new());
 	b.http2().timer(hyper_util::rt::tokio::TokioTimer::new());
 	b.http1().timer(hyper_util::rt::tokio::TokioTimer::new());
+	b.half_close(true);
 	let def = frontend::HTTP::default();
 
 	let frontend::HTTP {
