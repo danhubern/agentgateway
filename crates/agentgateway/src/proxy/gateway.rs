@@ -998,17 +998,36 @@ impl Gateway {
 					req.extensions_mut().insert(BufferLimit::new(buffer));
 				}
 				let req = req.map(crate::http::Body::new);
+				let ignore_client_abort = std::env::var("AGENTGATEWAY_IGNORE_CLIENT_ABORT")
+					.is_ok_and(|v| v == "true" || v == "1");
 
 				Either::Right(async move {
-					let mut response = telemetry::request_scope(
-						// This is the per-request HTTP flow future. It is the baseline task state
-						// multiplied by concurrent in-flight requests on this connection.
-						dtrace::DebugTracer::maybe_scope(req, |req| async move {
-							proxy.proxy(connection, req).map(Ok::<_, Infallible>).await
-						})
-						.assert_size::<{ PROXY_REQUEST_FUTURE_SIZE }>(),
-					)
-					.await?;
+					let flow = async move {
+						telemetry::request_scope(
+							// This is the per-request HTTP flow future. It is the baseline task state
+							// multiplied by concurrent in-flight requests on this connection.
+							dtrace::DebugTracer::maybe_scope(req, |req| async move {
+								proxy.proxy(connection, req).map(Ok::<_, Infallible>).await
+							})
+							.assert_size::<{ PROXY_REQUEST_FUTURE_SIZE }>(),
+						)
+						.await
+					};
+
+					let mut response = if ignore_client_abort {
+						let (tx_response, rx_response) = tokio::sync::oneshot::channel();
+						tokio::spawn(async move {
+							let _ = tx_response.send(flow.await);
+						});
+						match rx_response.await {
+							Ok(Ok(response)) => response,
+							Ok(Err(e)) => match e {},
+							Err(_) => unreachable!("the flow task always sends its result"),
+						}
+					} else {
+						flow.await?
+					};
+
 					close_if_draining(
 						is_http1,
 						drain_observer.as_ref(),

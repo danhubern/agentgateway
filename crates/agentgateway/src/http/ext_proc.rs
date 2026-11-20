@@ -560,12 +560,16 @@ impl ExtProcInstance {
 				}
 			}
 		};
-		dtrace::spawn(async move {
-			tokio::select! {
-				_ = process => {},
-				_ = cancel.cancelled() => trace!("downstream dropped, resetting ext_proc stream"),
-			}
-		});
+		if Self::ignore_client_abort_enabled() {
+			dtrace::spawn(process);
+		} else {
+			dtrace::spawn(async move {
+				tokio::select! {
+					_ = process => {},
+					_ = cancel.cancelled() => trace!("downstream dropped, resetting ext_proc stream"),
+				}
+			});
+		}
 
 		let (tx_resp_for_request, rx_resp_for_request) = tokio::sync::mpsc::channel(1);
 		let (tx_resp_for_response, rx_resp_for_response) = tokio::sync::mpsc::channel(1);
@@ -756,6 +760,11 @@ impl ExtProcInstance {
 		Ok(())
 	}
 
+	pub fn ignore_client_abort_enabled() -> bool {
+		std::env::var("AGENTGATEWAY_IGNORE_CLIENT_ABORT")
+			.is_ok_and(|v| v == "true" || v == "1")
+	}
+
 	#[allow(clippy::too_many_arguments)]
 	fn spawn_body_stream(
 		&self,
@@ -782,6 +791,10 @@ impl ExtProcInstance {
 			tokio::task::spawn(body_stream);
 			return;
 		};
+		if Self::ignore_client_abort_enabled() {
+			tokio::task::spawn(body_stream);
+			return;
+		}
 		tokio::task::spawn(async move {
 			tokio::select! {
 				_ = body_stream => {},
